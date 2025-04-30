@@ -13,6 +13,7 @@ It provides UI sections for:
 import streamlit as st
 import pandas as pd
 import altair as alt
+import requests
 
 from src.logging_config import get_logger
 from src.metrics import measure_duration, ui_request_duration_seconds
@@ -25,6 +26,42 @@ from src.payment.payment import generate_payment_plan, save_draft_payment_plans
 
 logger = get_logger(__name__)
 
+@st.cache_data
+def fetch_metrics():
+    resp = requests.get("http://localhost:8000/metrics")
+    resp.raise_for_status()
+    return resp.text
+
+def parse_metrics(text):
+    rows = []
+    for line in text.splitlines():
+        if not line or line.startswith('#'):
+            continue
+        parts = line.split()
+        if len(parts) == 2:
+            name_labels, value = parts
+            timestamp = None
+        elif len(parts) == 3:
+            name_labels, value, timestamp = parts
+        else:
+            continue
+        if '{' in name_labels:
+            metric, labels_str = name_labels.split('{', 1)
+            labels_str = labels_str.rstrip('}')
+            labels = {}
+            for pair in labels_str.split(','):
+                k, v = pair.split('=', 1)
+                labels[k] = v.strip('"')
+        else:
+            metric = name_labels
+            labels = {}
+        try:
+            ts = pd.to_datetime(int(timestamp), unit='s') if timestamp else None
+        except:
+            ts = None
+        rows.append({'metric': metric, 'labels': labels, 'value': float(value), 'timestamp': ts})
+    return pd.DataFrame(rows)
+
 
 @measure_duration(ui_request_duration_seconds)
 def main():
@@ -34,6 +71,27 @@ def main():
     rule application, forecasting, and payment plan generation. Decorated to record UI request duration.
     """
     st.title("Cashflow Forecasting")
+
+    view = st.sidebar.selectbox("View", ["Main App", "Performance Dashboard"])
+    if view == "Performance Dashboard":
+        try:
+            metrics_text = fetch_metrics()
+        except Exception as e:
+            st.error(f"Metrics endpoint unreachable: {e}")
+            return
+        df = parse_metrics(metrics_text)
+        metric_names = df["metric"].unique().tolist()
+        selected_metric = st.selectbox("Select metric", metric_names)
+        metric_df = df[df["metric"] == selected_metric].sort_values("timestamp")
+        # Time series chart
+        chart_df = metric_df.set_index("timestamp")["value"]
+        st.line_chart(chart_df)
+        # Summary table of latest values
+        metric_df['labels_str'] = metric_df['labels'].astype(str)
+        latest = metric_df.sort_values("timestamp").drop_duplicates("labels_str", keep="last")
+        latest = latest.rename(columns={"labels_str": "labels"})
+        st.dataframe(latest[["labels", "value", "timestamp"]])
+        return
 
     # Data Ingestion
     with st.expander("Data Ingestion"):
