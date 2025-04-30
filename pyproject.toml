@@ -1,0 +1,26 @@
+[tool.poetry]
+name = "streamlit-cashflow-forecast"
+version = "0.1.0"
+description = "Cashflow forecasting app"
+authors = ["Your Name <you@example.com>"]
+license = "MIT"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+pandas = "*"
+SQLAlchemy = "*"
+APScheduler = "*"
+prophet = "*"
+rule-engine = "*"
+streamlit = "*"
+
+[tool.poetry.dev-dependencies]
+pytest = "*"
+flake8 = "*"
+black = "*"
+mypy = "*"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

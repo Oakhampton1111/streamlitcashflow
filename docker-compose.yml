@@ -1,0 +1,35 @@
+version: '3.9'
+
+services:
+  db:
+    image: postgres:15
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: dbname
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: postgres://user:password@db:5432/dbname
+    volumes:
+      - ./src:/app/src
+    ports:
+      - "8501:8501"
+
+  scheduler:
+    build: .
+    command: python src/scheduler/scheduler.py
+    volumes:
+      - ./:/app
+
+volumes:
+  postgres_data:

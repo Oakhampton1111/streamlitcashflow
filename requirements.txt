@@ -1,0 +1,9 @@
+pandas
+SQLAlchemy
+APScheduler
+prophet
+rule-engine
+streamlit
+altair
+psycopg2-binary
+spacy
