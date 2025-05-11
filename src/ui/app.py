@@ -17,7 +17,7 @@ import requests
 
 from src.logging_config import get_logger
 from src.metrics import measure_duration, ui_request_duration_seconds
-from src.db.session import SessionLocal
+from src.db.session import get_db_session
 from src.db import models
 from src.etl.etl import run_etl
 from src.rules.rules import apply_pending_rules
@@ -109,54 +109,78 @@ def main():
 
     # Supplier Manager
     with st.expander("Supplier Manager"):
-        db = SessionLocal()
-        suppliers = db.query(models.Supplier).all()
-        sup_df = pd.DataFrame(
-            [
-                {
-                    "id": s.id,
-                    "name": s.name,
-                    "type": s.type,
-                    "max_delay_days": s.max_delay_days,
-                }
-                for s in suppliers
-            ]
-        )
+        with get_db_session() as db:
+            # Fetch all suppliers
+            suppliers = db.query(models.Supplier).all()
+
+            # Convert to DataFrame for display
+            sup_df = pd.DataFrame(
+                [
+                    {
+                        "id": s.id,
+                        "name": s.name,
+                        "type": s.type,
+                        "max_delay_days": s.max_delay_days,
+                    }
+                    for s in suppliers
+                ]
+            )
+
+        # Display editable table
         edited_suppliers = st.data_editor(sup_df, num_rows="dynamic")
+
+        # Save changes when button is clicked
         if st.button("Save Suppliers"):
             try:
-                for row in edited_suppliers.to_dict(orient="records"):
-                    sup = db.query(models.Supplier).get(row["id"])
-                    sup.type = row["type"]
-                    sup.max_delay_days = row["max_delay_days"]
-                db.commit()
+                with get_db_session() as db:
+                    for row in edited_suppliers.to_dict(orient="records"):
+                        # Validate row data
+                        if "id" not in row or "type" not in row or "max_delay_days" not in row:
+                            logger.warning(f"Skipping invalid supplier row: {row}")
+                            continue
+
+                        # Get supplier by ID
+                        sup = db.query(models.Supplier).get(row["id"])
+                        if not sup:
+                            logger.warning(f"Supplier with ID {row['id']} not found")
+                            continue
+
+                        # Update fields
+                        sup.type = row["type"]
+                        try:
+                            sup.max_delay_days = int(row["max_delay_days"])
+                        except (ValueError, TypeError):
+                            logger.warning(f"Invalid max_delay_days value: {row['max_delay_days']}")
+                            continue
+
                 st.success("Suppliers updated.")
             except Exception as e:
-                db.rollback()
+                logger.exception("Error updating suppliers", exc_info=e)
                 st.error(f"Update failed: {e}")
-        db.close()
 
     # Aging Creditors
     with st.expander("Aging Creditors"):
-        db = SessionLocal()
-        creditors = db.query(models.Creditor).all()
-        cred_df = pd.DataFrame(
-            [
-                {
-                    "id": c.id,
-                    "supplier_id": c.supplier_id,
-                    "invoice_date": c.invoice_date,
-                    "due_date": c.due_date,
-                    "amount": float(c.amount),
-                    "aging_days": c.aging_days,
-                    "status": c.status,
-                }
-                for c in creditors
-            ]
-        )
-        st.data_editor(cred_df, num_rows="dynamic")
+        with get_db_session() as db:
+            # Fetch all creditors
+            creditors = db.query(models.Creditor).all()
 
-        # conditional row coloring
+            # Convert to DataFrame for display
+            cred_df = pd.DataFrame(
+                [
+                    {
+                        "id": c.id,
+                        "supplier_id": c.supplier_id,
+                        "invoice_date": c.invoice_date,
+                        "due_date": c.due_date,
+                        "amount": float(c.amount),
+                        "aging_days": c.aging_days,
+                        "status": c.status,
+                    }
+                    for c in creditors
+                ]
+            )
+
+        # Define conditional row coloring function
         def color_rows(row):
             if row["aging_days"] > 30:
                 return ["background-color: red"] * len(row)
@@ -165,8 +189,9 @@ def main():
             else:
                 return [""] * len(row)
 
+        # Display styled dataframe with color coding
+        st.subheader("Aging Creditors Table")
         st.dataframe(cred_df.style.apply(color_rows, axis=1))
-        db.close()
 
     # Rule Editor
     with st.expander("Rule Editor"):
@@ -191,30 +216,56 @@ def main():
         # Display chart and table
         if st.button("Show Forecast"):
             try:
-                db = SessionLocal()
-                hist_df = get_historical_net_cash(db)
-                latest = (
-                    db.query(models.Forecast)
-                    .order_by(models.Forecast.run_date.desc())
-                    .first()
-                )
-                forecast_data = latest.forecast_json
-                fc_df = pd.DataFrame(forecast_data)
-                fc_df["ds"] = pd.to_datetime(fc_df["ds"])
-                chart_df = pd.concat(
-                    [
-                        hist_df.rename(columns={"ds": "ds", "y": "y"}),
-                        fc_df.rename(columns={"ds": "ds", "yhat": "y"}),
-                    ]
-                )
-                chart = (
-                    alt.Chart(chart_df)
-                    .mark_line()
-                    .encode(x="ds:T", y="y:Q", color=alt.value("steelblue"))
-                )
-                st.altair_chart(chart, use_container_width=True)
-                st.dataframe(fc_df)
-                db.close()
+                with get_db_session() as db:
+                    # Get historical cash data
+                    hist_df = get_historical_net_cash(db)
+
+                    # Get latest forecast
+                    latest = (
+                        db.query(models.Forecast)
+                        .order_by(models.Forecast.run_date.desc())
+                        .first()
+                    )
+
+                    if not latest:
+                        st.warning("No forecast data available. Please run a forecast first.")
+                        return
+
+                    # Process forecast data
+                    forecast_data = latest.forecast_json
+                    if not forecast_data:
+                        st.warning("Empty forecast data in latest forecast.")
+                        return
+
+                    # Convert to DataFrame
+                    fc_df = pd.DataFrame(forecast_data)
+                    fc_df["ds"] = pd.to_datetime(fc_df["ds"])
+
+                    # Combine historical and forecast data
+                    chart_df = pd.concat(
+                        [
+                            hist_df.rename(columns={"ds": "ds", "y": "y"}),
+                            fc_df.rename(columns={"ds": "ds", "yhat": "y"}),
+                        ]
+                    )
+
+                    # Create and display chart
+                    chart = (
+                        alt.Chart(chart_df)
+                        .mark_line()
+                        .encode(
+                            x=alt.X("ds:T", title="Date"),
+                            y=alt.Y("y:Q", title="Cash Position"),
+                            color=alt.value("steelblue")
+                        )
+                        .properties(title="Cash Flow Forecast")
+                    )
+                    st.altair_chart(chart, use_container_width=True)
+
+                    # Display forecast data table
+                    st.subheader("Forecast Data")
+                    st.dataframe(fc_df)
+
             except Exception as e:
                 logger.exception("UI error", exc_info=e)
                 st.error(f"Display failed: {e}")
@@ -234,12 +285,13 @@ def main():
             edited_plans = st.data_editor(plans_df, num_rows="dynamic")
             if st.button("Save Plans"):
                 try:
-                    db = SessionLocal()
-                    count = save_draft_payment_plans(
-                        db, edited_plans.to_dict(orient="records")
-                    )
-                    st.success(f"{count} plans saved.")
-                    db.close()
+                    with get_db_session() as db:
+                        # Convert edited plans to records
+                        plan_records = edited_plans.to_dict(orient="records")
+
+                        # Save plans
+                        count = save_draft_payment_plans(db, plan_records)
+                        st.success(f"{count} plans saved.")
                 except Exception as e:
                     logger.exception("UI error", exc_info=e)
                     st.error(f"Save failed: {e}")

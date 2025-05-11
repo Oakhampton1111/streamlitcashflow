@@ -8,7 +8,7 @@ from prometheus_client import start_http_server
 
 from src.logging_config import get_logger
 from src.metrics import measure_duration, delta_job_duration_seconds
-from src.db.session import SessionLocal
+from src.db.session import get_db_session
 from src.etl.etl import ingest_creditors_aging
 
 logger = get_logger(__name__)
@@ -24,18 +24,25 @@ def delta_job():
     Returns:
         None
     """
+    # Get CSV path from environment variable
     path = os.getenv("CREDITORS_AGING_CSV")
     if not path:
         logger.error("Environment variable CREDITORS_AGING_CSV not set")
         return
-    db = SessionLocal()
-    try:
-        inserted, updated = ingest_creditors_aging(db, path)
-        logger.info(f"Delta job completed: inserted={inserted}, updated={updated}")
-    except Exception as e:
-        logger.exception(f"Delta job failed: {e}")
-    finally:
-        db.close()
+
+    # Check if file exists
+    if not os.path.exists(path):
+        logger.error(f"Creditors aging CSV file not found at path: {path}")
+        return
+
+    # Process the file
+    with get_db_session() as db:
+        try:
+            inserted, updated = ingest_creditors_aging(db, path)
+            logger.info(f"Delta job completed: inserted={inserted}, updated={updated}")
+        except Exception as e:
+            logger.exception(f"Delta job failed: {e}")
+            # No need to rollback as the context manager handles it
 
 
 def start_scheduler():
